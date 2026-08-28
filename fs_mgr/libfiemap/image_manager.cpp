@@ -522,6 +522,7 @@ bool ImageManager::MapImageDevice(const std::string& name,
     }
 
     auto image_header = GetImageHeaderPath(name);
+    bool use_loop_device = false;
 
 #ifndef __ANDROID_RAMDISK__
     // If there is a device-mapper node wrapping the block device, then we're
@@ -549,12 +550,23 @@ bool ImageManager::MapImageDevice(const std::string& name,
     }
 
     if (!can_use_devicemapper) {
-        LOG(ERROR) << "Cannot map image: /data must be mounted on top of device-mapper.";
-        return false;
+        // DumberOS supports legacy vendor implementations through a GSI. PHH OTA images are the
+        // only persistent images allowed to use the old loop-device fallback when those vendors
+        // mount /data directly on a physical block device.
+        if (!IsSubdir(data_dir_, "/data/gsi/phh/")) {
+            LOG(ERROR) << "Cannot map image: /data must be mounted on top of device-mapper.";
+            return false;
+        }
+        LOG(INFO) << "Using loop-device fallback for PHH OTA image on legacy /data.";
+        use_loop_device = true;
     }
 #endif
 
-    if (!MapWithDmLinear(*partition_opener_.get(), name, timeout_ms, path)) {
+    if (use_loop_device) {
+        if (!MapWithLoopDevice(name, timeout_ms, path)) {
+            return false;
+        }
+    } else if (!MapWithDmLinear(*partition_opener_.get(), name, timeout_ms, path)) {
         return false;
     }
 
