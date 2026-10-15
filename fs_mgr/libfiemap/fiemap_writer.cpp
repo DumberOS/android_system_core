@@ -27,6 +27,8 @@
 #include <sys/vfs.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <utility>
@@ -39,6 +41,7 @@
 #include <android-base/unique_fd.h>
 #include <libdm/dm.h>
 #include "utility.h"
+#include "adaptive_write_pacer.h"
 
 namespace android {
 namespace fiemap {
@@ -425,13 +428,53 @@ static FiemapStatus WriteZeroes(int file_fd, const std::string& file_path, size_
     return FiemapStatus::Ok();
 }
 
+// Flush each bounded batch before pacing; sleeping alone would let dirty cache
+// accumulate and leave a long, disruptive final fsync. Keep ordinary callers on
+// the original path unless they explicitly opt in.
+static FiemapStatus WriteZeroesAdaptively(
+        int fd, const std::string& path, size_t blocksz, uint64_t size,
+        const std::function<bool(uint64_t, uint64_t)>& progress) {
+    size_t batch_size = std::max<size_t>(blocksz, (1024 * 1024 / blocksz) * blocksz);
+    std::vector<char> zeroes(batch_size, 0);
+    AdaptiveWritePacer pacer([](const AdaptiveWritePacer::Status& s) {
+        LOG(INFO) << "OTA zeroing: rate=" << s.mib_per_second << " MiB/s paused=" << s.paused
+                  << " action=" << s.action << " reason=" << s.reason
+                  << " initialized_bytes=" << s.bytes_written
+                  << " available_kib=" << std::to_string(s.available_kib.value_or(0))
+                  << " io_full_pct=" << s.io_full_percent.value_or(-1)
+                  << " memory_some_pct=" << s.memory_some_percent.value_or(-1)
+                  << " memory_full_pct=" << s.memory_full_percent.value_or(-1)
+                  << " batch_flush_seconds=" << s.batch_seconds;
+    });
+    if (lseek64(fd, 0, SEEK_SET) < 0) return FiemapStatus::FromErrno(errno);
+    uint64_t offset = 0;
+    while (offset < size) {
+        if (!pacer.BeforeWrite([&] { return !progress || progress(offset, size); })) {
+            int error = errno;
+            LOG(ERROR) << "OTA initialization stopped at " << offset << "/" << size
+                       << " bytes in " << path << ": " << strerror(error);
+            return FiemapStatus::FromErrno(error);
+        }
+        size_t bytes = std::min<uint64_t>(batch_size, size - offset);
+        if (!android::base::WriteFully(fd, zeroes.data(), bytes) || fsync(fd) != 0) {
+            int error = errno;
+            PLOG(ERROR) << "Failed to write/flush OTA initialization batch: " << path;
+            return FiemapStatus::FromErrno(error);
+        }
+        offset += bytes;
+        pacer.AfterWrite(bytes);
+    }
+    if (lseek64(fd, 0, SEEK_SET) < 0) return FiemapStatus::FromErrno(errno);
+    return FiemapStatus::Ok();
+}
+
 // Reserve space for the file on the file system and write it out to make sure the extents
 // don't come back unwritten. Return from this function with the kernel file offset set to 0.
 // If the filesystem is f2fs, then we also PIN the file on disk to make sure the blocks
 // aren't moved around.
 static FiemapStatus AllocateFile(int file_fd, const std::string& file_path, uint64_t blocksz,
                                  uint64_t file_size, unsigned int fs_type,
-                                 std::function<bool(uint64_t, uint64_t)> on_progress) {
+                                 std::function<bool(uint64_t, uint64_t)> on_progress, bool adaptive_pacing) {
     bool need_explicit_writes = true;
     switch (fs_type) {
         case EXT4_SUPER_MAGIC:
@@ -489,7 +532,9 @@ static FiemapStatus AllocateFile(int file_fd, const std::string& file_path, uint
     }
 
     if (need_explicit_writes) {
-        auto status = WriteZeroes(file_fd, file_path, blocksz, file_size, on_progress);
+        auto status = adaptive_pacing
+                              ? WriteZeroesAdaptively(file_fd, file_path, blocksz, file_size, on_progress)
+                              : WriteZeroes(file_fd, file_path, blocksz, file_size, on_progress);
         if (!status.is_ok()) {
             return status;
         }
@@ -663,8 +708,19 @@ static bool ReadFibmap(int file_fd, const std::string& file_path,
 
 FiemapUniquePtr FiemapWriter::Open(const std::string& file_path, uint64_t file_size, bool create,
                                    std::function<bool(uint64_t, uint64_t)> progress) {
+    return Open(file_path, file_size, create, std::move(progress), false);
+}
+
+FiemapStatus FiemapWriter::Open(const std::string& file_path, uint64_t file_size,
+                                FiemapUniquePtr* out, bool create,
+                                std::function<bool(uint64_t, uint64_t)> progress) {
+    return Open(file_path, file_size, out, create, std::move(progress), false);
+}
+
+FiemapUniquePtr FiemapWriter::Open(const std::string& file_path, uint64_t file_size, bool create,
+                                   std::function<bool(uint64_t, uint64_t)> progress, bool adaptive_pacing) {
     FiemapUniquePtr ret;
-    if (!Open(file_path, file_size, &ret, create, progress).is_ok()) {
+    if (!Open(file_path, file_size, &ret, create, progress, adaptive_pacing).is_ok()) {
         return nullptr;
     }
     return ret;
@@ -672,7 +728,7 @@ FiemapUniquePtr FiemapWriter::Open(const std::string& file_path, uint64_t file_s
 
 FiemapStatus FiemapWriter::Open(const std::string& file_path, uint64_t file_size,
                                 FiemapUniquePtr* out, bool create,
-                                std::function<bool(uint64_t, uint64_t)> progress) {
+                                std::function<bool(uint64_t, uint64_t)> progress, bool adaptive_pacing) {
     out->reset();
 
     // if 'create' is false, open an existing file and do not truncate.
@@ -745,7 +801,8 @@ FiemapStatus FiemapWriter::Open(const std::string& file_path, uint64_t file_size
 
     if (create) {
         auto status =
-                AllocateFile(file_fd, abs_path, blocksz, file_size, fs_type, std::move(progress));
+                AllocateFile(file_fd, abs_path, blocksz, file_size, fs_type, std::move(progress),
+                             adaptive_pacing);
         if (!status.is_ok()) {
             LOG(ERROR) << "Failed to allocate file: " << abs_path << " of size: " << file_size
                        << " bytes";

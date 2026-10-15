@@ -46,12 +46,22 @@ class FiemapWriter final {
     //
     // Note: when create is true, the file size will be aligned up to the nearest file system
     // block.
+    // With adaptive_pacing, initialization is flushed in small batches and
+    // paced against system pressure. The callback also polls cancellation while
+    // paused, so it may be invoked repeatedly with the same byte count.
     static FiemapUniquePtr Open(const std::string& file_path, uint64_t file_size,
                                 bool create = true,
                                 std::function<bool(uint64_t, uint64_t)> progress = {});
     static FiemapStatus Open(const std::string& file_path, uint64_t file_size, FiemapUniquePtr* out,
                              bool create = true,
-                             std::function<bool(uint64_t, uint64_t)> progress = {});
+                                std::function<bool(uint64_t, uint64_t)> progress = {});
+    // Explicit opt-in overloads preserve the existing entry points for callers.
+    static FiemapUniquePtr Open(const std::string& file_path, uint64_t file_size, bool create,
+                                std::function<bool(uint64_t, uint64_t)> progress,
+                                bool adaptive_pacing);
+    static FiemapStatus Open(const std::string& file_path, uint64_t file_size, FiemapUniquePtr* out,
+                             bool create, std::function<bool(uint64_t, uint64_t)> progress,
+                             bool adaptive_pacing);
 
     // Check that a file still has the same extents since it was last opened with FiemapWriter,
     // assuming the file was not resized outside of FiemapWriter. Returns false either on error

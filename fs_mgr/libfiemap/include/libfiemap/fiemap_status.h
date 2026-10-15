@@ -32,6 +32,8 @@ class FiemapStatus {
         ERROR = INT32_MIN,
         // Not enough space
         NO_SPACE = -ENOSPC,
+        CANCELED = -ECANCELED,
+        TIMED_OUT = -ETIMEDOUT,
     };
 
     // Create from a given errno (specified in errno,h)

@@ -43,10 +43,21 @@ using android::base::unique_fd;
 static const size_t kMaxFilePieces = 500;
 
 std::unique_ptr<SplitFiemap> SplitFiemap::Create(const std::string& file_path, uint64_t file_size,
+                                                 uint64_t max_piece_size, ProgressCallback progress) {
+    return Create(file_path, file_size, max_piece_size, std::move(progress), false);
+}
+
+FiemapStatus SplitFiemap::Create(const std::string& file_path, uint64_t file_size,
+                                 uint64_t max_piece_size, std::unique_ptr<SplitFiemap>* out_val,
+                                 ProgressCallback progress) {
+    return Create(file_path, file_size, max_piece_size, out_val, std::move(progress), false);
+}
+
+std::unique_ptr<SplitFiemap> SplitFiemap::Create(const std::string& file_path, uint64_t file_size,
                                                  uint64_t max_piece_size,
-                                                 ProgressCallback progress) {
+                                                 ProgressCallback progress, bool adaptive_pacing) {
     std::unique_ptr<SplitFiemap> ret;
-    if (!Create(file_path, file_size, max_piece_size, &ret, progress).is_ok()) {
+    if (!Create(file_path, file_size, max_piece_size, &ret, progress, adaptive_pacing).is_ok()) {
         return nullptr;
     }
     return ret;
@@ -54,7 +65,7 @@ std::unique_ptr<SplitFiemap> SplitFiemap::Create(const std::string& file_path, u
 
 FiemapStatus SplitFiemap::Create(const std::string& file_path, uint64_t file_size,
                                  uint64_t max_piece_size, std::unique_ptr<SplitFiemap>* out_val,
-                                 ProgressCallback progress) {
+                                 ProgressCallback progress, bool adaptive_pacing) {
     out_val->reset();
 
     if (!file_size) {
@@ -79,7 +90,8 @@ FiemapStatus SplitFiemap::Create(const std::string& file_path, uint64_t file_siz
     auto on_progress = [&](uint64_t written, uint64_t) -> bool {
         uint64_t actual_written = total_bytes_written + written;
         int new_permille = (actual_written * 1000) / file_size;
-        if (new_permille != permille && actual_written < file_size) {
+        // Adaptive waits also call back without progress to poll cancellation.
+        if (adaptive_pacing || (new_permille != permille && actual_written < file_size)) {
             if (progress && !progress(actual_written, file_size)) {
                 return false;
             }
@@ -103,7 +115,8 @@ FiemapStatus SplitFiemap::Create(const std::string& file_path, uint64_t file_siz
                 android::base::StringPrintf("%s.%04d", file_path.c_str(), (int)out->files_.size());
         uint64_t chunk_size = std::min(max_piece_size, remaining_bytes);
         FiemapUniquePtr writer;
-        auto status = FiemapWriter::Open(chunk_path, chunk_size, &writer, true, on_progress);
+        auto status = FiemapWriter::Open(chunk_path, chunk_size, &writer, true, on_progress,
+                                         adaptive_pacing);
         if (!status.is_ok()) {
             out.reset();
             return status;

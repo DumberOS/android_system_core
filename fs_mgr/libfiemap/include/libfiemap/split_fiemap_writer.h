@@ -47,6 +47,12 @@ class SplitFiemap final {
     static FiemapStatus Create(const std::string& file_path, uint64_t file_size,
                                uint64_t max_piece_size, std::unique_ptr<SplitFiemap>* out_val,
                                ProgressCallback progress = {});
+    static std::unique_ptr<SplitFiemap> Create(const std::string& file_path, uint64_t file_size,
+                                               uint64_t max_piece_size, ProgressCallback progress,
+                                               bool adaptive_pacing);
+    static FiemapStatus Create(const std::string& file_path, uint64_t file_size,
+                               uint64_t max_piece_size, std::unique_ptr<SplitFiemap>* out_val,
+                               ProgressCallback progress, bool adaptive_pacing);
 
     // Open an existing split fiemap file.
     static std::unique_ptr<SplitFiemap> Open(const std::string& file_path);

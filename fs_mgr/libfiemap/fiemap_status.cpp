@@ -32,6 +32,8 @@ FiemapStatus::ErrorCode FiemapStatus::CastErrorCode(int error_code) {
     switch (error_code) {
         case static_cast<int32_t>(ErrorCode::SUCCESS):
         case static_cast<int32_t>(ErrorCode::NO_SPACE):
+        case static_cast<int32_t>(ErrorCode::CANCELED):
+        case static_cast<int32_t>(ErrorCode::TIMED_OUT):
             return static_cast<ErrorCode>(error_code);
         case static_cast<int32_t>(ErrorCode::ERROR):
         default:

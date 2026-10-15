@@ -164,7 +164,8 @@ FiemapStatus ImageManager::CreateBackingImage(
         std::function<bool(uint64_t, uint64_t)>&& on_progress) {
     auto data_path = GetImageHeaderPath(name);
     std::unique_ptr<SplitFiemap> fw;
-    auto status = SplitFiemap::Create(data_path, size, 0, &fw, on_progress);
+    auto status = SplitFiemap::Create(data_path, size, 0, &fw, on_progress,
+                                      flags & CREATE_IMAGE_ADAPTIVE_PACING);
     if (!status.is_ok()) {
         return status;
     }

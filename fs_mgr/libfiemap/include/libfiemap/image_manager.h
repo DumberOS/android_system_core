@@ -54,6 +54,9 @@ class IImageManager {
     static constexpr int CREATE_IMAGE_DEFAULT = 0x0;
     static constexpr int CREATE_IMAGE_READONLY = 0x1;
     static constexpr int CREATE_IMAGE_ZERO_FILL = 0x2;
+    // Opt-in pressure-aware pacing of filesystem initialization writes. This
+    // does not change the optional raw-device ZERO_FILL pass.
+    static constexpr int CREATE_IMAGE_ADAPTIVE_PACING = 0x4;
 
     // Create an image that can be mapped as a block-device. If |force_zero_fill|
     // is true, the image will be zero-filled. Otherwise, the initial content

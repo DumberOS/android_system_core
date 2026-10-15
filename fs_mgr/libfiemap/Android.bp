@@ -27,10 +27,17 @@ cc_library_headers {
     host_supported: true,
 }
 
+cc_test_host {
+    name: "fiemap_adaptive_write_pacer_test",
+    srcs: ["adaptive_write_pacer.cpp", "adaptive_write_pacer_test.cpp"],
+    cflags: ["-Wall", "-Wextra", "-Werror"],
+}
+
 filegroup {
     name: "libfiemap_srcs",
     srcs: [
         "fiemap_writer.cpp",
+        "adaptive_write_pacer.cpp",
         "fiemap_status.cpp",
         "image_manager.cpp",
         "metadata.cpp",
